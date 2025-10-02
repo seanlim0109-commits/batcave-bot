@@ -9,111 +9,132 @@ from telegram.ext import (
     ConversationHandler,
 )
 
-# === CONFIG ===
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")  # stored securely in Railway later
-MEETING_ROOM_NAME = "The Batcave"
+# -------------------------------
+# CONFIGURATION
+# -------------------------------
+GROUP_ID = 5094667500  # Your private Telegram group ID
+ADMIN_USERNAMES = ["seeeeannnn"]  # Your Telegram handle for admin commands
 
-# === DATA STORAGE (in memory — simple for now) ===
-bookings = {}  # { "2025-10-02": [("12:00", "14:00", "Sean")] }
+START_HOUR = 8   # Booking starts at 8am
+END_HOUR = 18    # Booking ends at 6pm
+SLOT_DURATION = 1  # 1 hour per slot
 
-# === STEP 1: START ===
+# In-memory storage for bookings
+# Format: { "YYYY-MM-DD": { "HH:MM": "username" } }
+bookings = {}
+
+# -------------------------------
+# HELPER FUNCTIONS
+# -------------------------------
+def get_available_slots(date: str):
+    all_slots = [f"{h:02d}:00" for h in range(START_HOUR, END_HOUR)]
+    booked_slots = bookings.get(date, {})
+    return [slot for slot in all_slots if slot not in booked_slots]
+
+# -------------------------------
+# COMMAND HANDLERS
+# -------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_ID:
+        return  # Ignore messages outside the group
     await update.message.reply_text(
-        f"🦇 Welcome to the Batcave Booking Bot!\n\n"
-        f"Use /book to book the meeting room.\n"
-        f"Use /availability to check available times.\n"
-        f"Use /mybookings to see your current bookings."
+        "🦇 Welcome to the Batcave booking bot!\n"
+        "Use /book <YYYY-MM-DD> to book a 1-hour slot."
     )
 
-# === STEP 2: CHECK AVAILABILITY ===
-async def availability(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    today = datetime.now().date()
-    msg = f"📅 Available slots for {MEETING_ROOM_NAME} (next 3 days):\n\n"
+async def book(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_ID:
+        return  # Ignore messages outside the group
 
-    for i in range(3):
-        date = today + timedelta(days=i)
-        date_str = date.strftime("%Y-%m-%d")
-        booked_slots = bookings.get(date_str, [])
-        booked_ranges = [f"{b[0]}-{b[1]}" for b in booked_slots]
-        if booked_ranges:
-            msg += f"🔹 {date_str}: BOOKED ({', '.join(booked_ranges)})\n"
-        else:
-            msg += f"✅ {date_str}: All slots available\n"
+    if len(context.args) != 1:
+        await update.message.reply_text("❌ Usage: /book YYYY-MM-DD")
+        return
 
+    date_str = context.args[0]
+    try:
+        datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        await update.message.reply_text("❌ Invalid date format. Use YYYY-MM-DD.")
+        return
+
+    available_slots = get_available_slots(date_str)
+    if not available_slots:
+        await update.message.reply_text(f"❌ No available slots on {date_str}.")
+        return
+
+    keyboard = [[InlineKeyboardButton(slot, callback_data=f"{date_str}|{slot}")] for slot in available_slots]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(f"Select a slot on {date_str}:", reply_markup=reply_markup)
+
+async def slot_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_ID:
+        return  # Ignore messages outside the group
+
+    query = update.callback_query
+    await query.answer()
+    date_str, slot = query.data.split("|")
+
+    # Check if slot is still available
+    if slot in bookings.get(date_str, {}):
+        await query.edit_message_text(f"❌ Sorry, {slot} on {date_str} is already booked.")
+        return
+
+    # Save booking with username
+    if date_str not in bookings:
+        bookings[date_str] = {}
+    username = query.from_user.username or query.from_user.first_name
+    bookings[date_str][slot] = username
+
+    await query.edit_message_text(f"✅ {username} booked {slot} on {date_str}.")
+
+async def all_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_ID:
+        return
+
+    username = update.message.from_user.username
+    if username not in ADMIN_USERNAMES:
+        await update.message.reply_text("❌ You are not authorized to see all bookings.")
+        return
+
+    msg = "🦇 All Batcave bookings:\n"
+    for date, slots in sorted(bookings.items()):
+        for slot, user in sorted(slots.items()):
+            msg += f"{date} | {slot} | {user}\n"
+
+    if not bookings:
+        msg = "No bookings yet."
     await update.message.reply_text(msg)
 
-# === STEP 3: BOOKING ===
-async def book(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    today = datetime.now().date()
-    keyboard = [
-        [InlineKeyboardButton((today + timedelta(days=i)).strftime("%Y-%m-%d"), callback_data=(today + timedelta(days=i)).strftime("%Y-%m-%d"))]
-        for i in range(3)
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("📅 Choose a date to book:", reply_markup=reply_markup)
+async def my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_ID:
+        return
 
-async def handle_date_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    date_str = query.data
-    context.user_data["selected_date"] = date_str
-
-    # Offer time slots
-    times = [("09:00", "11:00"), ("11:00", "13:00"), ("13:00", "15:00"), ("15:00", "17:00")]
-    keyboard = [[InlineKeyboardButton(f"{t[0]} - {t[1]}", callback_data=f"{t[0]}-{t[1]}")] for t in times]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await query.edit_message_text(f"🕒 Select a time slot for {date_str}:", reply_markup=reply_markup)
-
-async def handle_time_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    time_range = query.data
-    start_time, end_time = time_range.split("-")
-    date_str = context.user_data["selected_date"]
-    username = query.from_user.first_name or query.from_user.username
-
-    if date_str not in bookings:
-        bookings[date_str] = []
-
-    # Check if time already booked
-    for b in bookings[date_str]:
-        if b[0] == start_time and b[1] == end_time:
-            await query.edit_message_text("❌ That time slot is already booked!")
-            return
-
-    # Save booking
-    bookings[date_str].append((start_time, end_time, username))
-    await query.edit_message_text(f"✅ Booked {MEETING_ROOM_NAME} on {date_str} from {start_time} to {end_time} for {username}!")
-
-# === STEP 4: VIEW MY BOOKINGS ===
-async def mybookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    username = update.message.from_user.first_name or update.message.from_user.username
-    user_bookings = []
-
+    username = update.message.from_user.username
+    msg = "🦇 Your bookings:\n"
+    found = False
     for date, slots in bookings.items():
-        for start, end, user in slots:
+        for slot, user in slots.items():
             if user == username:
-                user_bookings.append(f"📅 {date} | 🕒 {start}-{end}")
+                msg += f"{date} | {slot}\n"
+                found = True
+    if not found:
+        msg = "You have no bookings yet."
+    await update.message.reply_text(msg)
 
-    if user_bookings:
-        await update.message.reply_text("🦇 Your bookings:\n" + "\n".join(user_bookings))
-    else:
-        await update.message.reply_text("You don’t have any bookings yet.")
-
-# === MAIN APP ===
+# -------------------------------
+# MAIN BOT SETUP
+# -------------------------------
 def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    TOKEN = os.getenv("TELEGRAM_TOKEN")
+    app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("availability", availability))
     app.add_handler(CommandHandler("book", book))
-    app.add_handler(CommandHandler("mybookings", mybookings))
-    app.add_handler(CallbackQueryHandler(handle_date_selection, pattern=r"^\d{4}-\d{2}-\d{2}$"))
-    app.add_handler(CallbackQueryHandler(handle_time_selection, pattern=r"^\d{2}:\d{2}-\d{2}:\d{2}$"))
+    app.add_handler(CallbackQueryHandler(slot_selection))
+    app.add_handler(CommandHandler("allbookings", all_bookings))
+    app.add_handler(CommandHandler("mybookings", my_bookings))
 
-    print("🤖 Bot is running... (press Ctrl+C to stop)")
+    print("🤖 Bot is running...")
     app.run_polling()
 
 if __name__ == "__main__":
