@@ -6,14 +6,13 @@ from telegram.ext import (
     CommandHandler,
     CallbackQueryHandler,
     ContextTypes,
-    ConversationHandler,
 )
 
 # -------------------------------
 # CONFIGURATION
 # -------------------------------
 GROUP_ID = 5094667500  # Your private Telegram group ID
-ADMIN_USERNAMES = ["seeeeannnn"]  # Your Telegram handle for admin commands
+ADMIN_USERNAMES = ["seeeeannnn"]  # Admin users
 
 START_HOUR = 8   # Booking starts at 8am
 END_HOUR = 18    # Booking ends at 6pm
@@ -31,12 +30,20 @@ def get_available_slots(date: str):
     booked_slots = bookings.get(date, {})
     return [slot for slot in all_slots if slot not in booked_slots]
 
+def is_valid_date(date_str: str):
+    try:
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+        today = datetime.now().date()
+        return date_obj.date() >= today
+    except ValueError:
+        return False
+
 # -------------------------------
 # COMMAND HANDLERS
 # -------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID:
-        return  # Ignore messages outside the group
+        return
     await update.message.reply_text(
         "🦇 Welcome to the Batcave booking bot!\n"
         "Use /book <YYYY-MM-DD> to book a 1-hour slot."
@@ -44,17 +51,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def book(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID:
-        return  # Ignore messages outside the group
+        return
 
     if len(context.args) != 1:
         await update.message.reply_text("❌ Usage: /book YYYY-MM-DD")
         return
 
     date_str = context.args[0]
-    try:
-        datetime.strptime(date_str, "%Y-%m-%d")
-    except ValueError:
-        await update.message.reply_text("❌ Invalid date format. Use YYYY-MM-DD.")
+    if not is_valid_date(date_str):
+        await update.message.reply_text("❌ Invalid date. Please use YYYY-MM-DD for today or future dates.")
         return
 
     available_slots = get_available_slots(date_str)
@@ -68,18 +73,16 @@ async def book(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def slot_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID:
-        return  # Ignore messages outside the group
+        return
 
     query = update.callback_query
     await query.answer()
     date_str, slot = query.data.split("|")
 
-    # Check if slot is still available
     if slot in bookings.get(date_str, {}):
         await query.edit_message_text(f"❌ Sorry, {slot} on {date_str} is already booked.")
         return
 
-    # Save booking with username
     if date_str not in bookings:
         bookings[date_str] = {}
     username = query.from_user.username or query.from_user.first_name
