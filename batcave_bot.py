@@ -14,30 +14,34 @@ from telegram.ext import (
 GROUP_ID = 5094667500  # Your private Telegram group ID
 ADMIN_USERNAMES = ["seeeeannnn"]  # Admin users
 
-START_HOUR = 8   # Booking starts at 8am
-END_HOUR = 18    # Booking ends at 6pm
+START_HOUR = 8   # 8am
+END_HOUR = 18    # 6pm
 SLOT_DURATION = 1  # 1 hour per slot
-DATE_RANGE_DAYS = 365 * 10  # Allows booking for the next 10 years
+DATE_PAGE_SIZE = 7  # Show 7 days per page for pagination
 
-# In-memory storage for bookings
-# Format: { "YYYY-MM-DD": { "HH:MM": "username" } }
-bookings = {}
+# In-memory storage
+bookings = {}  # { "YYYY-MM-DD": { "HH:MM": "username" } }
 
 # -------------------------------
 # HELPER FUNCTIONS
 # -------------------------------
-def get_available_slots(date: str):
+def get_available_slots(date_str):
+    """Return all available 1-hour slots for a given date."""
     all_slots = [f"{h:02d}:00" for h in range(START_HOUR, END_HOUR)]
-    booked_slots = bookings.get(date, {})
+    booked_slots = bookings.get(date_str, {})
     return [slot for slot in all_slots if slot not in booked_slots]
 
-def is_valid_date(date_str: str):
-    try:
-        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
-        today = datetime.now().date()
-        return date_obj.date() >= today
-    except ValueError:
-        return False
+def generate_date_keyboard(start_date, page_size=DATE_PAGE_SIZE):
+    """Generate inline keyboard with a page of dates."""
+    keyboard = []
+    for i in range(page_size):
+        date = start_date + timedelta(days=i)
+        date_str = date.strftime("%Y-%m-%d")
+        keyboard.append([InlineKeyboardButton(date_str, callback_data=f"DATE|{date_str}")])
+    # Add next page button
+    next_page_date = start_date + timedelta(days=page_size)
+    keyboard.append([InlineKeyboardButton("Next ➡️", callback_data=f"PAGE|{next_page_date.strftime('%Y-%m-%d')}")])
+    return InlineKeyboardMarkup(keyboard)
 
 # -------------------------------
 # COMMAND HANDLERS
@@ -50,34 +54,33 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Use /book to select a date and time slot."
     )
 
-# STEP 1: Show date selection
+# /book command
 async def book(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID:
         return
-
-    keyboard = []
     today = datetime.now()
-    for i in range(DATE_RANGE_DAYS):
-        date = today + timedelta(days=i)
-        date_str = date.strftime("%Y-%m-%d")
-        keyboard.append([InlineKeyboardButton(date_str, callback_data=f"DATE|{date_str}")])
+    keyboard = generate_date_keyboard(today)
+    await update.message.reply_text("Select a date:", reply_markup=keyboard)
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Select a date:", reply_markup=reply_markup)
-
-# STEP 2: Handle date selection
+# Handle date button selection
 async def handle_date_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID:
         return
-
     query = update.callback_query
     await query.answer()
+
+    if query.data.startswith("PAGE|"):
+        next_start_str = query.data.split("|")[1]
+        next_start = datetime.strptime(next_start_str, "%Y-%m-%d")
+        keyboard = generate_date_keyboard(next_start)
+        await query.edit_message_text("Select a date:", reply_markup=keyboard)
+        return
+
     if not query.data.startswith("DATE|"):
         return
 
     date_str = query.data.split("|")[1]
     context.user_data["selected_date"] = date_str
-
     slots = get_available_slots(date_str)
     if not slots:
         await query.edit_message_text(f"❌ No available slots on {date_str}.")
@@ -86,11 +89,10 @@ async def handle_date_selection(update: Update, context: ContextTypes.DEFAULT_TY
     keyboard = [[InlineKeyboardButton(slot, callback_data=f"SLOT|{slot}")] for slot in slots]
     await query.edit_message_text(f"Select a slot for {date_str}:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# STEP 3: Handle timeslot selection
+# Handle timeslot button selection
 async def handle_slot_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID:
         return
-
     query = update.callback_query
     await query.answer()
     if not query.data.startswith("SLOT|"):
@@ -114,22 +116,19 @@ async def handle_slot_selection(update: Update, context: ContextTypes.DEFAULT_TY
     await query.edit_message_text(f"✅ {username} booked {slot} on {date_str}.")
 
 # -------------------------------
-# ADMIN & USER BOOKING COMMANDS
+# ADMIN & USER COMMANDS
 # -------------------------------
 async def all_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID:
         return
-
     username = update.message.from_user.username
     if username not in ADMIN_USERNAMES:
         await update.message.reply_text("❌ You are not authorized to see all bookings.")
         return
-
     msg = "🦇 All Batcave bookings:\n"
     for date, slots in sorted(bookings.items()):
         for slot, user in sorted(slots.items()):
             msg += f"{date} | {slot} | {user}\n"
-
     if not bookings:
         msg = "No bookings yet."
     await update.message.reply_text(msg)
@@ -137,7 +136,6 @@ async def all_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_ID:
         return
-
     username = update.message.from_user.username
     msg = "🦇 Your bookings:\n"
     found = False
@@ -160,6 +158,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("book", book))
     app.add_handler(CallbackQueryHandler(handle_date_selection, pattern="^DATE\\|"))
+    app.add_handler(CallbackQueryHandler(handle_date_selection, pattern="^PAGE\\|"))
     app.add_handler(CallbackQueryHandler(handle_slot_selection, pattern="^SLOT\\|"))
     app.add_handler(CommandHandler("allbookings", all_bookings))
     app.add_handler(CommandHandler("mybookings", my_bookings))
